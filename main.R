@@ -6,8 +6,8 @@ RESULT_FILE_PATH <- "./results.xlsx"
 
 ### Initialize libraries
 library(xlsx)
-
-
+library(dummies)
+library(dplyr)
 ### Load data
 weatherData <- read.csv(file = './weatherAUS.csv')
 
@@ -17,6 +17,10 @@ head(weatherData)
 ### Summary of weather data
 summary <- summary(weatherData)
 summary
+
+#### ++++++++++++++++++++++++++++++
+#### Data preparation
+#### ++++++++++++++++++++++++++++++
 
 ### Empty rows count
 columnNames <-colnames(weatherData)
@@ -56,11 +60,26 @@ rm(col, columnNames, summary) # Clear values
 # RISK_MM - amount of next day rain in mm.
 #	* This could leak prediction data to our model, so drop it.
 # Date - The date of observation
-#	* Redundant data.
+#	* Useless data.
 weatherData <- subset(weatherData, select = -c(Date, RISK_MM, Location, Sunshine, Cloud9am, Cloud3pm, Evaporation) )
 
 head(weatherData) # Preview cleaned data
 
 ### Remove rows containing null (empty) values
-ok <- complete.cases(weatherData)
+weatherData <-weatherData[complete.cases(weatherData),]
 
+### Map "yes" -> "1", "no" -> "0"
+mapping<- c("no"=0,"yes"=1)
+weatherData$RainToday <- mapping[weatherData$RainToday]
+weatherData$RainTomorrow <- mapping[weatherData$RainTomorrow]
+
+head(weatherData) # Preview mapped data
+
+### Create dummy variables
+weatherData <- dummy.data.frame(weatherData, names = c("WindGustDir","WindDir3pm","WindDir9am") , sep = ".")
+
+head(weatherData) # Preview data with dummy variables
+
+#### ++++++++++++++++++++++++++++++
+#### Data preparation
+#### ++++++++++++++++++++++++++++++
