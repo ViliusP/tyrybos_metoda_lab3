@@ -15,6 +15,14 @@ library(mlbench)
 library(caret)
 library(corrplot)
 library('randomForest')
+library(e1071)
+library(caTools)
+library(caret)
+library(knitr)
+
+### Set seed
+set.seed(80085)
+
 
 ### Load data
 weatherData <- read.csv(file = './weatherAUS.csv')
@@ -95,10 +103,8 @@ head(weatherData) # Preview data with dummy variables
 ### Standardize data - make all data between 0 and 1
 weatherData <- as.data.frame(apply(weatherData, MARGIN = 2, FUN = function(X) (X - min(X))/diff(range(X))))
 
-y = weatherData["RainTomorrow"]
-x = subset(weatherData, select = -c(RainTomorrow) )
-
-# Loading library
+#y = weatherData["RainTomorrow"]
+#x = subset(weatherData, select = -c(RainTomorrow) )
 
 # Using random forest for variable selection
 rfModel <-randomForest(y = weatherData[, 62], x = weatherData[,1:61])
@@ -114,8 +120,40 @@ importanceFeatureList <-importance(rfModel)
 # WindGustSpeed 1197.12444
 # Rainfall 1155.87331
 
-xWithMostImportantFeatures <- subset(x, select = c(Humidity3pm, Pressure3pm, WindGustSpeed, Rainfall) )
+### weather data with most important features
+finalWeatherData <- subset(weatherData, select = c(Humidity3pm, Pressure3pm, WindGustSpeed, Rainfall, RainTomorrow) )
+
+### Split data to training and test sets
+split = sample.split(finalWeatherData$RainTomorrow, SplitRatio = 0.75)
+training_set = subset(finalWeatherData, split == TRUE)
+test_set = subset(finalWeatherData, split == FALSE)
+
 
 #### ++++++++++++++++++++++++++++++
 #### SVM
 #### ++++++++++++++++++++++++++++++
+
+
+
+# in creating the folds we specify the target feature (dependent variable) and # of folds
+folds = createFolds(training_set$RainTomorrow, k = 10)
+# in cv we are going to applying a created function to our 'folds'
+cv = lapply(folds, function(x) { # start of function
+  # in the next two lines we will separate the Training set into it's 10 pieces
+  training_fold = training_set[-x, ] # training fold =  training set minus (-) it's sub test fold
+  test_fold = training_set[x, ] # here we describe the test fold individually
+  # now apply (train) the classifer on the training_fold
+  classifier = svm(formula = RainTomorrow ~ .,
+                   data = training_fold,
+                   type = 'C-classification',
+                   kernel = 'radial')
+  # next step in the loop, we calculate the predictions and cm and we equate the accuracy
+  # note we are training on training_fold and testing its accuracy on the test_fold
+  y_pred = predict(classifier, newdata = test_fold[-5]) # <------------- Change number according to your features count
+  cm = table(test_fold[, 5], y_pred) # <------------- Change number according to your features count
+  accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+  return(accuracy)
+})
+
+knitr::include_graphics("CV.png")
+accuracy = mean(as.numeric(cv))
