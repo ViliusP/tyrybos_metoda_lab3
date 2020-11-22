@@ -1,3 +1,6 @@
+### Dataset link
+###
+
 ### Clear console
 cat("\014")  
 
@@ -8,6 +11,11 @@ RESULT_FILE_PATH <- "./results.xlsx"
 library(xlsx)
 library(dummies)
 library(dplyr)
+library(mlbench)
+library(caret)
+library(corrplot)
+library('randomForest')
+
 ### Load data
 weatherData <- read.csv(file = './weatherAUS.csv')
 
@@ -38,7 +46,7 @@ write.xlsx(
   RESULT_FILE_PATH,
   sheetName = "empty_column_rows_count",
   col.names = FALSE, row.names = FALSE, 
-  append = FALSE,
+  append = TRUE,
 )
 
 rm(col, columnNames, summary) # Clear values
@@ -57,7 +65,7 @@ rm(col, columnNames, summary) # Clear values
 #	* Too little data.
 # Location - the name of the city located in Australia.
 #	* We are determining Will it rain in Australia? So we don't need locations.
-# RISK_MM - amount of next day rain in mm.
+# RISK_MM - predicted amount of next day rain in mm.
 #	* This could leak prediction data to our model, so drop it.
 # Date - The date of observation
 #	* Useless data.
@@ -81,5 +89,33 @@ weatherData <- dummy.data.frame(weatherData, names = c("WindGustDir","WindDir3pm
 head(weatherData) # Preview data with dummy variables
 
 #### ++++++++++++++++++++++++++++++
-#### Data preparation
+#### Data preprocess
+#### ++++++++++++++++++++++++++++++
+
+### Standardize data - make all data between 0 and 1
+weatherData <- as.data.frame(apply(weatherData, MARGIN = 2, FUN = function(X) (X - min(X))/diff(range(X))))
+
+y = weatherData["RainTomorrow"]
+x = subset(weatherData, select = -c(RainTomorrow) )
+
+# Loading library
+
+# Using random forest for variable selection
+rfModel <-randomForest(y = weatherData[, 62], x = weatherData[,1:61])
+
+rfModel <-randomForest(RainTomorrow ~ ., data = weatherData)
+
+# Getting the list of important variables
+importanceFeatureList <-importance(rfModel)
+
+# Select columns by importance 
+# Humidity3pm 4325.11484
+# Pressure3pm 1319.30391
+# WindGustSpeed 1197.12444
+# Rainfall 1155.87331
+
+xWithMostImportantFeatures <- subset(x, select = c(Humidity3pm, Pressure3pm, WindGustSpeed, Rainfall) )
+
+#### ++++++++++++++++++++++++++++++
+#### SVM
 #### ++++++++++++++++++++++++++++++
