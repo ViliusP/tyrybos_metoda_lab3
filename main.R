@@ -19,7 +19,11 @@ library(e1071)
 library(caTools)
 library(caret)
 library(knitr)
-
+library(keras)
+library(deepviz)
+library(magrittr)
+library(tensorflow)
+library(tidyverse)
 ### Set seed
 set.seed(80085)
 
@@ -39,7 +43,8 @@ summary
 #### ++++++++++++++++++++++++++++++
 
 ### Empty rows count
-columnNames <-colnames(weatherData)
+columnNames <-colnam
+es(weatherData)
 emptyRowCount <-matrix(ncol=2, nrow=length(columnNames))
 
 for ( col in 1:ncol(weatherData))
@@ -77,38 +82,48 @@ rm(col, columnNames, summary) # Clear values
 #	* This could leak prediction data to our model, so drop it.
 # Date - The date of observation
 #	* Useless data.
-weatherData <- subset(weatherData, select = -c(Date, RISK_MM, Location, Sunshine, Cloud9am, Cloud3pm, Evaporation) )
 
+weatherData = weatherData %>% select(-Date, -RISK_MM, -Location, -Sunshine, -Cloud9am, -Cloud3pm, -Evaporation)
 head(weatherData) # Preview cleaned data
 
 ### Remove rows containing null (empty) values
-weatherData <-weatherData[complete.cases(weatherData),]
+weatherData = weatherData %>% na.exclude()
 
-### Map "yes" -> "1", "no" -> "0"
-mapping<- c("no"=0,"yes"=1)
-weatherData$RainToday <- mapping[weatherData$RainToday]
-weatherData$RainTomorrow <- mapping[weatherData$RainTomorrow]
 
 head(weatherData) # Preview mapped data
 
 ### Create dummy variables
+
+weatherData <- weatherData %>% 
+  mutate_at(vars(WindGustDir, WindDir9am, WindDir3pm, RainToday, RainTomorrow), as.factor)
+
+
+
 weatherData <- dummy.data.frame(weatherData, names = c("WindGustDir","WindDir3pm","WindDir9am") , sep = ".")
 
 head(weatherData) # Preview data with dummy variables
+
+
+### Map "yes" -> "1", "no" -> "0" and scale
+weatherData = weatherData %>%
+  mutate_at(vars(RainTomorrow), ~ as.numeric(.) - 1) %>%
+  mutate_at(vars(RainToday), ~ as.numeric(.) - 1) %>%
+  mutate_at(vars(-RainTomorrow, -RainToday), ~ as.vector(scale(.)))
+head(weatherData) # Preview data scaled
+
 
 #### ++++++++++++++++++++++++++++++
 #### Data preprocess
 #### ++++++++++++++++++++++++++++++
 
-### Standardize data - make all data between 0 and 1
-weatherData <- as.data.frame(apply(weatherData, MARGIN = 2, FUN = function(X) (X - min(X))/diff(range(X))))
-
 #y = weatherData["RainTomorrow"]
 #x = subset(weatherData, select = -c(RainTomorrow) )
 
 # Using random forest for variable selection
+# use this one
 rfModel <-randomForest(y = weatherData[, 62], x = weatherData[,1:61])
 
+# or this one
 rfModel <-randomForest(RainTomorrow ~ ., data = weatherData)
 
 # Getting the list of important variables
@@ -121,8 +136,14 @@ importanceFeatureList <-importance(rfModel)
 # Rainfall 1155.87331
 
 ### weather data with most important features
-finalWeatherData <- subset(weatherData, select = c(Humidity3pm, Pressure3pm, WindGustSpeed, Rainfall, RainTomorrow) )
-
+finalWeatherData <- weatherData %>%select(
+      RainTomorrow,
+      RainToday,
+      Rainfall,
+      Humidity3pm,
+      MaxTemp,
+      Pressure3pm) %>%
+  mutate_at(vars(-RainTomorrow, -RainToday), ~ as.vector(scale(.)))
 ### Split data to training and test sets
 split = sample.split(finalWeatherData$RainTomorrow, SplitRatio = 0.75)
 training_set = subset(finalWeatherData, split == TRUE)
@@ -149,11 +170,143 @@ cv = lapply(folds, function(x) { # start of function
                    kernel = 'radial')
   # next step in the loop, we calculate the predictions and cm and we equate the accuracy
   # note we are training on training_fold and testing its accuracy on the test_fold
-  y_pred = predict(classifier, newdata = test_fold[-5]) # <------------- Change number according to your features count
-  cm = table(test_fold[, 5], y_pred) # <------------- Change number according to your features count
+  y_pred = predict(classifier, newdata = test_fold[-ncol(training_set)]) # <------------- Change number according to your features count
+  cm = table(test_fold[, ncol(training_set)], y_pred) # <------------- Change number according to your features count
   accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
   return(accuracy)
 })
 
-knitr::include_graphics("CV.png")
 accuracy = mean(as.numeric(cv))
+
+
+
+#### ++++++++++++++++++++++++++++++
+#### Neural network (Keras)
+#### +++++++++++++++++++++++++++++
+x_train = training_set %>% select(-RainTomorrow)
+y_train = training_set$RainTomorrow
+
+x_test = test_set %>% select(-RainTomorrow)
+y_test = test_set$RainTomorrow
+
+
+# Initialize a sequential model
+nn_model <- keras_model_sequential() 
+
+# Add layers to the model
+nn_model %>% 
+  layer_dense(units = 10, input_shape = ncol(x_train), name="input") %>% 
+  layer_activation_leaky_relu() %>% 
+  
+  layer_dense(units = 64) %>%
+  layer_activation_leaky_relu() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 128) %>%
+  layer_activation_leaky_relu() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 64) %>%
+  layer_activation_leaky_relu() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 10) %>%
+  layer_activation_leaky_relu() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 1, activation = "sigmoid")
+
+
+
+# Print a summary of a model
+summary(nn_model)
+
+# Get model configuration
+get_config(nn_model)
+
+# Get layer configuration
+get_layer(nn_model, index = 1)
+
+# List the model's layers
+nn_model$layers
+
+# List the input tensors
+nn_model$inputs
+
+# List the output tensors
+nn_model$outputs
+
+
+optim = optimizer_rmsprop(lr = 0.0008)
+nn_model %>% compile(loss = "binary_crossentropy",
+                  optimizer = optim,
+                  metrics = c("accuracy"))
+
+nn_model %>% fit(
+  x = as.matrix(x_train),
+  y = as.matrix(y_train),
+  epochs = 10,
+  batch_size = 64,
+  validation_split = 0.3
+)
+
+
+model = keras_model_sequential()
+
+# Bulding the architecture of the network
+model %>%
+  layer_dense(units = 10,
+              input_shape = ncol(x_train),
+              name = "inputs") %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 128) %>%
+  layer_activation_leaky_relu() %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 128) %>%
+  layer_activation_leaky_relu() %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 256) %>%
+  layer_activation_leaky_relu() %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 126) %>%
+  layer_activation_leaky_relu() %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 64) %>%
+  layer_activation_leaky_relu() %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 32) %>%
+  layer_activation_leaky_relu() %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 10) %>%
+  layer_activation_leaky_relu() %>%
+  layer_batch_normalization() %>%
+  layer_dropout(rate = 0.5) %>%
+  
+  layer_dense(units = 1, activation = "sigmoid")
+
+
+optim = optimizer_rmsprop(lr = 0.0008)
+model %>% compile(loss = "binary_crossentropy",
+                  optimizer = optim,
+                  metrics = c("accuracy"))
+
+model %>% fit(
+  x = as.matrix(x_train),
+  y = as.matrix(y_train),
+  epochs = 10,
+  batch_size = 64,
+  validation_split = 0.5
+)
