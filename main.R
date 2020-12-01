@@ -14,16 +14,20 @@ library(dplyr)
 library(mlbench)
 library(caret)
 library(corrplot)
+library(RColorBrewer)
 library('randomForest')
 library(e1071)
 library(caTools)
-library(caret)
 library(knitr)
 library(keras)
 library(deepviz)
 library(magrittr)
-library(tensorflow)
-library(tidyverse)
+library(rpart)
+library(rpart.plot)
+#library(tensorflow) # Tensforflow conflicts with randomForest
+#library(tidyverse)
+library(ggplot2)
+library(tictoc)
 ### Set seed
 set.seed(80085)
 
@@ -129,56 +133,142 @@ rfModel <-randomForest(RainTomorrow ~ ., data = weatherData)
 # Getting the list of important variables
 importanceFeatureList <-importance(rfModel)
 
+write.xlsx(
+  importanceFeatureList,
+  RESULT_FILE_PATH,
+  sheetName = "importance",
+  col.names = TRUE, row.names = TRUE, 
+  append = TRUE,
+)
+
+
+
 # Select columns by importance 
-# Humidity3pm 4325.11484
-# Pressure3pm 1319.30391
-# WindGustSpeed 1197.12444
-# Rainfall 1155.87331
 
 ### weather data with most important features
 finalWeatherData <- weatherData %>%select(
       RainTomorrow,
-      RainToday,
       Rainfall,
       Humidity3pm,
-      MaxTemp,
+      Temp3pm,
+      WindGustSpeed,
       Pressure3pm) %>%
-  mutate_at(vars(-RainTomorrow, -RainToday), ~ as.vector(scale(.)))
+  mutate_at(vars(RainTomorrow), as.factor)
+
+
+### Data vizualization
+corrplot(cor(finalWeatherData), type="upper", order="hclust",
+         col=brewer.pal(n=8, name="RdYlBu"))
+
+ggplot(weatherData, aes(y = Rainfall, x = RainTomorrow)) +
+  geom_point()
+
+ggplot(weatherData, aes(y = Humidity3pm, x = RainTomorrow)) +
+  geom_point()
+
+ggplot(weatherData, aes(y = Temp3pm, x = RainTomorrow)) +
+  geom_point()
+
+ggplot(weatherData, aes(y = WindGustSpeed, x = RainTomorrow)) +
+  geom_point()
+
+ggplot(weatherData, aes(y = Pressure3pm, x = RainTomorrow)) +
+  geom_point()
+
+
 ### Split data to training and test sets
 split = sample.split(finalWeatherData$RainTomorrow, SplitRatio = 0.75)
 training_set = subset(finalWeatherData, split == TRUE)
 test_set = subset(finalWeatherData, split == FALSE)
 
+meta_check_split = sample.split(finalWeatherData$RainTomorrow, SplitRatio = 0.05)
+meta_check_set = subset(finalWeatherData, meta_check_split == TRUE)
 
 #### ++++++++++++++++++++++++++++++
 #### SVM
 #### ++++++++++++++++++++++++++++++
 
+svm_radial <- tune.svm(RainTomorrow ~ .,
+            data = meta_check_set, 
+           type = "C-classification", 
+           kernel = "radial", degree = 2, cost = 10^(1:3), 
+           gamma = c(0.1, 1, 100), coef0 = c(0.1, 1, 10),  tunecontrol = tune.control(cross=5))
+
+print(svm_radial$performances)
+write.xlsx(
+  svm_radial$performances,
+  RESULT_FILE_PATH,
+  sheetName = "svm_radial",
+  col.names = TRUE, row.names = TRUE, 
+  append = TRUE,
+)
+svm_poly <- tune.svm(RainTomorrow ~ .,
+                       data = meta_check_set, 
+                       type = "C-classification", 
+                       kernel = "polynomial", degree = 3, cost = 10^(1:3), 
+                       gamma = c(0.1, 1, 100), coef0 = c(0.1, 1, 10),  tunecontrol = tune.control(cross=5))
+
+print(svm_poly$performances)
+#### ++++++++++++++++++++++++++++++
+#### Random forest classifier
+#### +++++++++++++++++++++++++++++
+
+rf_m4_n30 <- tune.randomForest(RainTomorrow ~ .,
+                  data = meta_check_set, tunecontrol = tune.control(cross=10), maxnodes=4, ntree=30)
+
+rf_m25_n30 <- tune.randomForest(RainTomorrow ~ .,
+                  data = meta_check_set, tunecontrol = tune.control(cross=10), maxnodes=25, ntree=30)
+
+rf_node500 <- tune.randomForest(RainTomorrow ~ .,
+                        data = meta_check_set, tunecontrol = tune.control(cross=10), nodesize = 500)
+
+rf_node2500 <- tune.randomForest(RainTomorrow ~ .,
+                        data = meta_check_set, tunecontrol = tune.control(cross=10), nodesize = 2500)
 
 
-# in creating the folds we specify the target feature (dependent variable) and # of folds
-folds = createFolds(training_set$RainTomorrow, k = 10)
-# in cv we are going to applying a created function to our 'folds'
-cv = lapply(folds, function(x) { # start of function
-  # in the next two lines we will separate the Training set into it's 10 pieces
-  training_fold = training_set[-x, ] # training fold =  training set minus (-) it's sub test fold
-  test_fold = training_set[x, ] # here we describe the test fold individually
-  # now apply (train) the classifer on the training_fold
-  classifier = svm(formula = RainTomorrow ~ .,
-                   data = training_fold,
-                   type = 'C-classification',
-                   kernel = 'radial')
-  # next step in the loop, we calculate the predictions and cm and we equate the accuracy
-  # note we are training on training_fold and testing its accuracy on the test_fold
-  y_pred = predict(classifier, newdata = test_fold[-ncol(training_set)]) # <------------- Change number according to your features count
-  cm = table(test_fold[, ncol(training_set)], y_pred) # <------------- Change number according to your features count
-  accuracy = (cm[1,1] + cm[2,2]) / (cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
-  return(accuracy)
-})
+rf <- tune.randomForest(RainTomorrow ~ .,
+                  data = meta_check_set, tunecontrol = tune.control(cross=10))
 
-accuracy = mean(as.numeric(cv))
+control <- trainControl(method="repeatedcv", number=5, repeats=1, search="grid")
+tunegrid <- expand.grid(.mtry=c(1:5))
+metric <- "Accuracy"
+rf_gridsearch <- train(RainTomorrow ~ ., data=meta_check_set, method="rf", metric=metric, tuneGrid=tunegrid, trControl=control)
+print(rf_gridsearch)
+plot(rf_gridsearch)
+
+control <- trainControl(method="repeatedcv", number=5, repeats=1, search="random")
+rf_randomsearch <- train(RainTomorrow ~ ., data=meta_check_set, method="rf", metric=metric, tuneGrid=tunegrid, trControl=control)
+print(rf_randomsearch)
+plot(rf_randomsearch)
 
 
+plot(rf_default)
+
+
+
+#### ++++++++++++++++++++++++++++++
+#### Decision Tree
+#### +++++++++++++++++++++++++++++
+
+
+metric <- "Accuracy"
+rpart_classifier <-train(
+  RainTomorrow ~ ., data=training_set, method = "rpart",
+  metric=metric,
+  trControl = trainControl("cv", number = 10),
+  tuneLength = 50
+)
+print(rpart_classifier)
+plot(rpart_classifier)
+
+
+write.xlsx(
+  rpart_classifier$results,
+  RESULT_FILE_PATH,
+  sheetName = "rpart",
+  col.names = TRUE, row.names = TRUE, 
+  append = TRUE,
+)
 
 #### ++++++++++++++++++++++++++++++
 #### Neural network (Keras)
@@ -222,19 +312,19 @@ nn_model %>%
 summary(nn_model)
 
 # Get model configuration
-get_config(nn_model)
+#get_config(nn_model)
 
 # Get layer configuration
-get_layer(nn_model, index = 1)
+#get_layer(nn_model, index = 1)
 
 # List the model's layers
-nn_model$layers
+#nn_model$layers
 
 # List the input tensors
-nn_model$inputs
+#nn_model$inputs
 
 # List the output tensors
-nn_model$outputs
+#nn_model$outputs
 
 
 optim = optimizer_rmsprop(lr = 0.0008)
@@ -250,63 +340,256 @@ nn_model %>% fit(
   validation_split = 0.3
 )
 
+### NN2
 
-model = keras_model_sequential()
 
-# Bulding the architecture of the network
-model %>%
-  layer_dense(units = 10,
-              input_shape = ncol(x_train),
-              name = "inputs") %>%
-  layer_activation_leaky_relu() %>%
-  
-  layer_dense(units = 128) %>%
-  layer_activation_leaky_relu() %>%
-  layer_batch_normalization() %>%
-  layer_dropout(rate = 0.5) %>%
-  
-  layer_dense(units = 128) %>%
-  layer_activation_leaky_relu() %>%
-  layer_batch_normalization() %>%
-  layer_dropout(rate = 0.5) %>%
-  
-  layer_dense(units = 256) %>%
-  layer_activation_leaky_relu() %>%
-  layer_batch_normalization() %>%
-  layer_dropout(rate = 0.5) %>%
-  
-  layer_dense(units = 126) %>%
-  layer_activation_leaky_relu() %>%
-  layer_batch_normalization() %>%
-  layer_dropout(rate = 0.5) %>%
+# Initialize a sequential model
+nn_model2 <- keras_model_sequential() 
+
+# Add layers to the model
+nn_model2 %>% 
+  layer_dense(units = 10, input_shape = ncol(x_train), name="input") %>% 
+  layer_activation_leaky_relu() %>% 
   
   layer_dense(units = 64) %>%
   layer_activation_leaky_relu() %>%
-  layer_batch_normalization() %>%
-  layer_dropout(rate = 0.5) %>%
+  layer_dropout(rate = 0.75) %>%
   
-  layer_dense(units = 32) %>%
+  layer_dense(units = 128) %>%
   layer_activation_leaky_relu() %>%
-  layer_batch_normalization() %>%
-  layer_dropout(rate = 0.5) %>%
+  layer_dropout(rate = 0.75) %>%
+  
+  layer_dense(units = 64) %>%
+  layer_activation_leaky_relu() %>%
+  layer_dropout(rate = 0.75) %>%
   
   layer_dense(units = 10) %>%
   layer_activation_leaky_relu() %>%
-  layer_batch_normalization() %>%
-  layer_dropout(rate = 0.5) %>%
+  layer_dropout(rate = 0.75) %>%
   
   layer_dense(units = 1, activation = "sigmoid")
 
-
 optim = optimizer_rmsprop(lr = 0.0008)
-model %>% compile(loss = "binary_crossentropy",
-                  optimizer = optim,
-                  metrics = c("accuracy"))
+nn_model2 %>% compile(loss = "binary_crossentropy",
+                     optimizer = optim,
+                     metrics = c("accuracy"))
 
-model %>% fit(
+nn_model2 %>% fit(
   x = as.matrix(x_train),
   y = as.matrix(y_train),
   epochs = 10,
   batch_size = 64,
-  validation_split = 0.5
+  validation_split = 0.3
 )
+
+
+
+### NN3
+
+
+# Initialize a sequential model
+nn_model3 <- keras_model_sequential() 
+
+# Add layers to the model
+nn_model3 %>% 
+  layer_dense(units = 10, input_shape = ncol(x_train), name="input") %>% 
+  layer_activation_leaky_relu() %>% 
+  
+  layer_dense(units = 64) %>%
+  layer_activation_leaky_relu() %>%
+
+  layer_dense(units = 128) %>%
+  layer_activation_leaky_relu() %>%
+
+  layer_dense(units = 64) %>%
+  layer_activation_leaky_relu() %>%
+
+  layer_dense(units = 10) %>%
+  layer_activation_leaky_relu() %>%
+
+  layer_dense(units = 1, activation = "sigmoid")
+
+optim = optimizer_rmsprop(lr = 0.0008)
+nn_model3 %>% compile(loss = "binary_crossentropy",
+                      optimizer = optim,
+                      metrics = c("accuracy"))
+
+nn_model3 %>% fit(
+  x = as.matrix(x_train),
+  y = as.matrix(y_train),
+  epochs = 10,
+  batch_size = 64,
+  validation_split = 0.3
+)
+
+
+### NN4
+# Initialize a sequential model
+nn_model4 <- keras_model_sequential() 
+
+# Add layers to the model
+nn_model4 %>% 
+  layer_dense(units = 10, input_shape = ncol(x_train), name="input") %>% 
+  layer_activation_leaky_relu() %>% 
+  
+  layer_dense(units = 32) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 64) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 32) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 10) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 1, activation = "sigmoid")
+
+optim = optimizer_rmsprop(lr = 0.0008)
+nn_model4 %>% compile(loss = "binary_crossentropy",
+                      optimizer = optim,
+                      metrics = c("accuracy"))
+
+nn_model4 %>% fit(
+  x = as.matrix(x_train),
+  y = as.matrix(y_train),
+  epochs = 10,
+  batch_size = 64,
+  validation_split = 0.3
+)
+
+
+### NN5
+# Initialize a sequential model
+nn_model5 <- keras_model_sequential() 
+
+# Add layers to the model
+nn_model5 %>% 
+  layer_dense(units = 10, input_shape = ncol(x_train), name="input") %>% 
+  layer_activation_leaky_relu() %>% 
+  
+  layer_dense(units = 32) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 64) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 32) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 10) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 1, activation = "softmax")
+
+optim = optimizer_rmsprop(lr = 0.0008)
+nn_model5 %>% compile(loss = "binary_crossentropy",
+                      optimizer = optim,
+                      metrics = c("accuracy"))
+
+nn_model5 %>% fit(
+  x = as.matrix(x_train),
+  y = as.matrix(y_train),
+  epochs = 10,
+  batch_size = 64,
+  validation_split = 0.3
+)
+
+### NN6
+# Initialize a sequential model
+nn_model6 <- keras_model_sequential() 
+
+# Add layers to the model
+nn_model6 %>% 
+  layer_dense(units = 10, input_shape = ncol(x_train), name="input") %>% 
+  layer_activation_leaky_relu() %>% 
+  
+  layer_dense(units = 10) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 10) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 1, activation = "sigmoid")
+
+optim = optimizer_rmsprop(lr = 0.0008)
+nn_model6 %>% compile(loss = "binary_crossentropy",
+                      optimizer = optim,
+                      metrics = c("accuracy"))
+
+nn_model6 %>% fit(
+  x = as.matrix(x_train),
+  y = as.matrix(y_train),
+  epochs = 10,
+  batch_size = 64,
+  validation_split = 0.3
+)
+#############################
+########### Final classifying
+#############################
+
+### Neuron network
+# Initialize a sequential model
+nn_model_final <- keras_model_sequential() 
+
+# Add layers to the model
+nn_model_final %>% 
+  layer_dense(units = 10, input_shape = ncol(x_train), name="input") %>% 
+  layer_activation_leaky_relu() %>% 
+  
+  layer_dense(units = 64) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 128) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 64) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 10) %>%
+  layer_activation_leaky_relu() %>%
+  
+  layer_dense(units = 1, activation = "sigmoid")
+
+optim = optimizer_rmsprop(lr = 0.0008)
+nn_model_final %>% compile(loss = "binary_crossentropy",
+                      optimizer = optim,
+                      metrics = c("accuracy"))
+
+tic("neural_network")
+nn_model_final %>% fit(
+  x = as.matrix(x_train),
+  y = as.matrix(y_train),
+  epochs = 20,
+  batch_size = 64,
+  validation_split = 0.3
+)
+toc()
+
+score <- nn_model_final %>% predict_classes( x = as.matrix(x_test))
+confusionMatrix(table(as.matrix(y_test), score))
+### SVM
+
+tic("svm")
+svm(x_train, y = y_train, kernel="radial", cost =10, gamma = 0.1, coef0=0.1)
+toc()     
+      
+### Decision Tree
+levels(y_train) = c(0, 1)
+levels(y_test) = c(0, 1)
+
+tic("decision_tree")
+dc_final <- rpart(RainTomorrow ~ ., data=training_set,  control=rpart.control(cp=8.88e-05), method="class")
+toc()
+prediction_dc <-predict(dc_final, x_test, method="class")
+confusionMatrix(prediction_dc, y_test)
+
+### Random forest
+
+tic("rf")
+rf_final <-randomForest(y = as.factor(y_train), x = x_train, mtry=1, do.trace=10)
+toc()
+prediction <-predict(rf_final, newdata=x_test)
+confusionMatrix(prediction, as.factor(y_test))
+print(rf_final)
